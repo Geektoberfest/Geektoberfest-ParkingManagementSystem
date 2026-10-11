@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { Link, useParams, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import api from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
@@ -12,6 +12,7 @@ import {
   HiOutlineChevronLeft, HiOutlineChevronRight, HiOutlineX,
   HiOutlineClock, HiOutlineShieldCheck, HiOutlineStar,
   HiStar, HiOutlineExternalLink, HiOutlinePhotograph,
+  HiOutlineExclamationCircle,
 } from 'react-icons/hi';
 
 const BACKEND_URL = import.meta.env.VITE_API_URL?.replace('/api', '') || 'http://localhost:5000';
@@ -23,6 +24,7 @@ const ParkingDetail = () => {
 
   const [lot, setLot] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
   const [imageIndex, setImageIndex] = useState(0);
   const [fullscreenImage, setFullscreenImage] = useState(null);
   const [reviewForm, setReviewForm] = useState({ rating: 5, comment: '' });
@@ -31,12 +33,28 @@ const ParkingDetail = () => {
 
   // Fetch full lot detail
   const fetchLot = useCallback(async () => {
+    setLoading(true);
+    setLoadError(null);
+    setLot(null);
     try {
       const res = await api.get(`/parking-lots/${id}`);
       setLot(res.data.data);
-    } catch {
-      toast.error('Failed to load parking lot details');
-      navigate('/nearby');
+    } catch (err) {
+      const status = err.response?.status;
+
+      if (status === 404) {
+        setLoadError('not-found');
+      } else if (status === 401) {
+        setLoadError('unauthenticated');
+      } else if (status === 403) {
+        setLoadError('unauthorized');
+      } else if (!err.response) {
+        setLoadError('network-error');
+        toast.error('Unable to reach the server. Please check your connection.');
+      } else {
+        setLoadError('server-error');
+        toast.error(err.response?.data?.message || 'Failed to load parking lot details');
+      }
     } finally {
       setLoading(false);
     }
@@ -113,6 +131,64 @@ const ParkingDetail = () => {
   };
 
   if (loading) return <div className="min-h-screen flex items-center justify-center"><LoadingSpinner /></div>;
+  if (loadError) {
+    const isMissingLot = loadError === 'not-found';
+    const needsLogin = loadError === 'unauthenticated';
+    const isUnauthorized = loadError === 'unauthorized';
+    const isNetworkError = loadError === 'network-error';
+
+    const title = isMissingLot
+      ? 'Parking lot not found'
+      : needsLogin
+        ? 'Please sign in to continue'
+        : isUnauthorized
+          ? 'You do not have access to this parking lot'
+          : isNetworkError
+            ? 'Unable to reach the server'
+            : 'Unable to load this parking lot';
+
+    const message = isMissingLot
+      ? 'This parking lot may have been removed or the link is no longer valid.'
+      : needsLogin
+        ? 'Your session may have expired. Sign in and try again.'
+        : isUnauthorized
+          ? 'Your account is not permitted to view this parking lot.'
+          : isNetworkError
+            ? 'Please check your connection and try again.'
+            : 'The server could not load this parking lot. Please try again later.';
+
+    return (
+      <main className="min-h-screen px-4 py-12 sm:px-6" aria-labelledby="parking-load-title">
+        <section className="mx-auto flex max-w-xl flex-col items-center rounded-2xl border border-gray-200 bg-white p-6 text-center shadow-sm dark:border-dark-border dark:bg-dark-card sm:p-10">
+          <HiOutlineExclamationCircle size={44} className="text-primary-600" aria-hidden="true" />
+          <h1 id="parking-load-title" className="mt-4 text-2xl font-bold text-gray-900 dark:text-white">
+            {title}
+          </h1>
+          <p className="mt-3 text-gray-600 dark:text-gray-300">
+            {message}
+          </p>
+          <div className="mt-7 flex flex-col gap-3 sm:flex-row">
+            {isMissingLot || isUnauthorized ? (
+              <Link to="/parking" className="btn-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-dark-card">
+                Browse parking lots
+              </Link>
+            ) : needsLogin ? (
+              <Link to="/login" className="btn-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-dark-card">
+                Sign in
+              </Link>
+            ) : (
+              <button type="button" onClick={fetchLot} className="btn-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-dark-card">
+                Try again
+              </button>
+            )}
+            <button type="button" onClick={() => navigate('/nearby')} className="btn-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-dark-card">
+              View nearby parking
+            </button>
+          </div>
+        </section>
+      </main>
+    );
+  }
   if (!lot) return null;
 
   const images = getLotImages(lot);
