@@ -103,3 +103,17 @@ npm install
 
 # Start development server
 npm run dev # or npm start
+
+### Payment sandbox setup
+
+SmartPark uses Razorpay **test mode** for parking payments. Copy `backend/.env.example` to `backend/.env` and set `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, and `RAZORPAY_WEBHOOK_SECRET` with test credentials. Configure the Razorpay webhook URL as:
+
+```text
+https://your-public-backend.example/api/payments/webhook
+```
+
+Subscribe to `payment.captured` and `payment.failed`. The backend verifies the checkout signature, confirms captured payments with Razorpay, and verifies the webhook HMAC against the raw request body. The frontend receives only the public test key returned with a server-created order; it does not need a secret or a `VITE_` payment-key variable.
+
+Parking fees use the rate saved on the selected parking lot at booking creation. Each started hour is billed with a one-hour minimum, and the booking stores a paise-denominated fare snapshot so later rate changes do not alter an existing booking's payable amount.
+
+Bookings created before fare snapshots were introduced are intentionally not charged from a mutable legacy total; migrate them to a verified snapshot or handle them through support. Cancelling a paid booking also requires a separate verified refund workflow—this integration never labels a booking refunded unless a provider refund has been implemented.

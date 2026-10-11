@@ -496,6 +496,9 @@ const BookParking = () => {
                         <span className="text-gray-900 dark:text-white">Total</span>
                         <span className="text-primary-600">{formatCurrency(totalCost)}</span>
                       </div>
+                      <p className="text-xs text-gray-500 dark:text-gray-400 pt-1">
+                        Estimate only — the server confirms the final fare from the parking-lot rate when you book.
+                      </p>
                     </div>
                   )}
 

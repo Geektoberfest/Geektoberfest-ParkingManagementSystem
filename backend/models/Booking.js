@@ -37,6 +37,15 @@ const bookingSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    fareBreakdown: {
+      currency: { type: String, enum: ['INR'], default: 'INR' },
+      billableHours: { type: Number, default: 0, min: 0 },
+      hourlyRatePaise: { type: Number, default: 0, min: 0 },
+      subtotalPaise: { type: Number, default: 0, min: 0 },
+      additionalChargesPaise: { type: Number, default: 0, min: 0 },
+      totalAmountPaise: { type: Number, default: 0, min: 0 },
+      pricingPolicy: { type: String, default: '' },
+    },
     bookingStatus: {
       type: String,
       enum: ['pending', 'confirmed', 'active', 'completed', 'cancelled', 'expired'],
@@ -46,6 +55,11 @@ const bookingSchema = new mongoose.Schema(
       type: String,
       enum: ['pending', 'completed', 'refunded', 'failed'],
       default: 'pending',
+    },
+    paymentId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Payment',
+      default: null,
     },
     qrCode: {
       type: String,

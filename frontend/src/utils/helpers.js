@@ -44,6 +44,8 @@ export const getStatusColor = (status) => {
     pending: 'bg-yellow-500',
     success: 'bg-green-500',
     failed: 'bg-red-500',
+    cancelled: 'bg-gray-500',
+    manual_review: 'bg-orange-500',
     refunded: 'bg-orange-500',
   };
   return colors[status] || 'bg-gray-500';
@@ -62,6 +64,8 @@ export const getStatusBadge = (status) => {
     pending: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-300',
     success: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300',
     failed: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300',
+    cancelled: 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300',
+    manual_review: 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-300',
     refunded: 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-300',
   };
   return badges[status] || 'bg-gray-100 text-gray-800';

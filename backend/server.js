@@ -27,6 +27,7 @@ const notificationRoutes = require('./routes/notificationRoutes');
 const settingsRoutes = require('./routes/settingsRoutes');
 const cmsRoutes = require('./routes/cmsRoutes');
 const exportRoutes = require('./routes/exportRoutes');
+const { handleRazorpayWebhook } = require('./controllers/paymentController');
 
 const app = express();
 const server = http.createServer(app);
@@ -55,6 +56,9 @@ app.use('/api/', limiter);
 
 // Serve uploaded files
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+// This route must run before the JSON parser so Razorpay's HMAC covers the exact bytes received.
+app.post('/api/payments/webhook', express.raw({ type: 'application/json' }), handleRazorpayWebhook);
 
 // Body parsing
 app.use(express.json({ limit: '10mb' }));

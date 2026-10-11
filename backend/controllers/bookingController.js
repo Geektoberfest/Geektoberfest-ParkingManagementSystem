@@ -1,10 +1,12 @@
 const Booking = require('../models/Booking');
+const Payment = require('../models/Payment');
 const ParkingSlot = require('../models/ParkingSlot');
 const ParkingLot = require('../models/ParkingLot');
 const User = require('../models/User');
 const Notification = require('../models/Notification');
 const QRCode = require('qrcode');
 const { sendBookingConfirmationEmail, sendCancellationEmail } = require('../services/emailService');
+const { calculateParkingFare } = require('../services/parkingFeeService');
 
 // @desc    Create booking
 // @route   POST /api/bookings/create
@@ -23,10 +25,16 @@ exports.createBooking = async (req, res, next) => {
     if (!lot) {
       return res.status(404).json({ success: false, message: 'Parking lot not found' });
     }
+    if (slot.parkingLotId.toString() !== lot._id.toString()) {
+      return res.status(400).json({ success: false, message: 'Selected slot does not belong to this parking lot' });
+    }
 
     // Calculate duration & cost
     const start = new Date(startTime);
     const end = new Date(endTime);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) {
+      return res.status(400).json({ success: false, message: 'End time must be after start time' });
+    }
 
     // ── Booking Overlap Protection ──
     const overlappingBooking = await Booking.findOne({
@@ -41,8 +49,7 @@ exports.createBooking = async (req, res, next) => {
         message: 'This slot is already booked for the selected time period. Please choose a different time or slot.',
       });
     }
-    const durationHours = Math.max(1, Math.ceil((end - start) / (1000 * 60 * 60)));
-    const totalAmount = durationHours * lot.pricePerHour;
+    const fareBreakdown = calculateParkingFare({ startTime: start, endTime: end, pricePerHour: lot.pricePerHour });
 
     // Create booking
     const booking = await Booking.create({
@@ -52,8 +59,17 @@ exports.createBooking = async (req, res, next) => {
       vehicleNumber: vehicleNumber || req.user.vehicleNumber,
       startTime: start,
       endTime: end,
-      duration: durationHours,
-      totalAmount,
+      duration: fareBreakdown.billableHours,
+      totalAmount: fareBreakdown.totalAmount,
+      fareBreakdown: {
+        currency: fareBreakdown.currency,
+        billableHours: fareBreakdown.billableHours,
+        hourlyRatePaise: fareBreakdown.hourlyRatePaise,
+        subtotalPaise: fareBreakdown.subtotalPaise,
+        additionalChargesPaise: fareBreakdown.additionalChargesPaise,
+        totalAmountPaise: fareBreakdown.totalAmountPaise,
+        pricingPolicy: fareBreakdown.pricingPolicy,
+      },
       bookingStatus: 'confirmed',
     });
 
@@ -155,7 +171,6 @@ exports.cancelBooking = async (req, res, next) => {
     if (!booking) {
       return res.status(404).json({ success: false, message: 'Booking not found' });
     }
-
     if (booking.userId.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
       return res.status(403).json({ success: false, message: 'Not authorized' });
     }
@@ -163,10 +178,20 @@ exports.cancelBooking = async (req, res, next) => {
     if (booking.bookingStatus === 'completed' || booking.bookingStatus === 'cancelled') {
       return res.status(400).json({ success: false, message: 'Cannot cancel this booking' });
     }
+    if (booking.paymentStatus === 'completed') {
+      return res.status(409).json({
+        success: false,
+        message: 'Paid bookings require a verified refund workflow and cannot be cancelled here',
+      });
+    }
 
     booking.bookingStatus = 'cancelled';
-    booking.paymentStatus = 'refunded';
+    booking.paymentStatus = 'failed';
     await booking.save();
+    await Payment.updateMany(
+      { bookingId: booking._id, status: 'pending' },
+      { $set: { status: 'cancelled', failureCode: 'booking_cancelled', orderCreationInProgress: false } }
+    );
 
     // Free up the slot
     await ParkingSlot.findByIdAndUpdate(booking.slotId, { status: 'available' });
@@ -196,7 +221,7 @@ exports.cancelBooking = async (req, res, next) => {
     const cancelNotif = await Notification.create({
       userId: booking.userId,
       title: 'Booking Cancelled',
-      message: 'Your booking has been cancelled and refund will be processed.',
+      message: 'Your booking has been cancelled before payment was completed.',
       type: 'booking',
       link: '/dashboard/bookings',
     });
@@ -224,6 +249,9 @@ exports.completeBooking = async (req, res, next) => {
     const booking = await Booking.findById(req.params.id);
     if (!booking) {
       return res.status(404).json({ success: false, message: 'Booking not found' });
+    }
+    if (booking.userId.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
+      return res.status(403).json({ success: false, message: 'Not authorized' });
     }
 
     booking.bookingStatus = 'completed';
@@ -259,6 +287,9 @@ exports.getBooking = async (req, res, next) => {
     if (!booking) {
       return res.status(404).json({ success: false, message: 'Booking not found' });
     }
+    if (booking.userId.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
+      return res.status(403).json({ success: false, message: 'Not authorized' });
+    }
     res.json({ success: true, data: booking });
   } catch (error) {
     next(error);
@@ -275,6 +306,9 @@ exports.checkIn = async (req, res, next) => {
 
     if (!booking) {
       return res.status(404).json({ success: false, message: 'Booking not found' });
+    }
+    if (booking.userId.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
+      return res.status(403).json({ success: false, message: 'Not authorized' });
     }
 
     if (booking.bookingStatus !== 'confirmed') {
@@ -318,6 +352,9 @@ exports.checkOut = async (req, res, next) => {
 
     if (!booking) {
       return res.status(404).json({ success: false, message: 'Booking not found' });
+    }
+    if (booking.userId.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
+      return res.status(403).json({ success: false, message: 'Not authorized' });
     }
 
     if (booking.bookingStatus !== 'active') {

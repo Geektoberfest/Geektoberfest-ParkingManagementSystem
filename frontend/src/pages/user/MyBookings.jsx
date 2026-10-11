@@ -10,6 +10,7 @@ import { QRCodeSVG } from 'qrcode.react';
 import { HiOutlineLocationMarker, HiOutlineMap, HiOutlineExclamation } from 'react-icons/hi';
 import { FiStar, FiLogIn, FiLogOut, FiDownload, FiX } from 'react-icons/fi';
 import { getSocket } from '../../services/socket';
+import { loadRazorpayCheckout } from '../../utils/razorpay';
 
 // Haversine distance
 const getDistance = (lat1, lon1, lat2, lon2) => {
@@ -36,6 +37,7 @@ const MyBookings = () => {
   const [showDirections, setShowDirections] = useState(false);
   const [directionsBooking, setDirectionsBooking] = useState(null);
   const [userLocation, setUserLocation] = useState(null);
+  const [payingBookingId, setPayingBookingId] = useState(null);
 
   // Re-fetch bookings whenever the logged-in user changes
   useEffect(() => {
@@ -94,12 +96,62 @@ const MyBookings = () => {
   };
 
   const handlePay = async (bookingId) => {
+    setPayingBookingId(bookingId);
     try {
-      await api.post('/payments/process', { bookingId, paymentMethod: 'card' });
-      toast.success('Payment successful!');
-      fetchBookings();
+      // The amount used below comes only from the authenticated server response.
+      const [fareRes, orderRes] = await Promise.all([
+        api.get(`/payments/fare/${bookingId}`),
+        api.post('/payments/orders', { bookingId }),
+      ]);
+      const fare = fareRes.data.data.fareBreakdown;
+      const checkout = orderRes.data.data;
+      const checkoutLoaded = await loadRazorpayCheckout();
+      if (!checkoutLoaded) {
+        toast.error('Secure checkout could not be loaded. Please try again.');
+        setPayingBookingId(null);
+        return;
+      }
+
+      const razorpay = new window.Razorpay({
+        key: checkout.keyId,
+        amount: checkout.amountPaise,
+        currency: checkout.currency,
+        name: 'SmartPark',
+        description: `${fare.billableHours} started hour(s) of parking`,
+        order_id: checkout.orderId,
+        prefill: {
+          name: user?.name || '',
+          email: user?.email || '',
+          contact: user?.phoneNumber || '',
+        },
+        theme: { color: '#2563eb' },
+        handler: async (response) => {
+          try {
+            const verification = await api.post('/payments/verify', response);
+            if (verification.data.success) {
+              toast.success('Payment verified successfully.');
+              fetchBookings();
+            } else {
+              toast('Payment is awaiting confirmation. We will update the booking shortly.', { icon: '⏳' });
+            }
+          } catch (err) {
+            toast.error(err.response?.data?.message || 'We could not verify the payment yet. Please retry shortly.');
+          } finally {
+            setPayingBookingId(null);
+          }
+        },
+        modal: {
+          ondismiss: () => setPayingBookingId(null),
+        },
+      });
+      razorpay.on('payment.failed', () => {
+        toast.error('Payment was not completed. You can retry securely.');
+        setPayingBookingId(null);
+      });
+      razorpay.open();
     } catch (err) {
       toast.error(err.response?.data?.message || 'Payment failed');
+      setPayingBookingId(null);
     }
   };
 
@@ -301,6 +353,26 @@ Status: ${receipt.status}
                 <span>Total</span>
                 <span className="text-primary-600">{formatCurrency(selectedBooking.totalAmount)}</span>
               </div>
+              {selectedBooking.fareBreakdown?.totalAmountPaise > 0 && (
+                <div className="rounded-lg bg-primary-50 dark:bg-primary-900/20 p-3 space-y-1.5 text-sm">
+                  <p className="font-semibold text-gray-800 dark:text-gray-100">Server-calculated fare</p>
+                  <div className="flex justify-between text-gray-600 dark:text-gray-300">
+                    <span>Started hours</span>
+                    <span>{selectedBooking.fareBreakdown.billableHours}</span>
+                  </div>
+                  <div className="flex justify-between text-gray-600 dark:text-gray-300">
+                    <span>Hourly rate</span>
+                    <span>{formatCurrency(selectedBooking.fareBreakdown.hourlyRatePaise / 100)}</span>
+                  </div>
+                  {selectedBooking.fareBreakdown.additionalChargesPaise > 0 && (
+                    <div className="flex justify-between text-gray-600 dark:text-gray-300">
+                      <span>Additional charges</span>
+                      <span>{formatCurrency(selectedBooking.fareBreakdown.additionalChargesPaise / 100)}</span>
+                    </div>
+                  )}
+                  <p className="text-xs text-gray-500 dark:text-gray-400 pt-1">{selectedBooking.fareBreakdown.pricingPolicy}</p>
+                </div>
+              )}
               {selectedBooking.overdueCharge > 0 && (
                 <div className="flex justify-between text-sm text-orange-600 dark:text-orange-400">
                   <span>Overdue ({selectedBooking.overdueHours}h extra)</span>
@@ -391,6 +463,11 @@ Status: ${receipt.status}
                       <p className="font-bold text-primary-600">{formatCurrency(b.totalAmount)}</p>
                     </div>
                   </div>
+                  {b.fareBreakdown?.totalAmountPaise > 0 && (
+                    <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                      Server-calculated: {b.fareBreakdown.billableHours} started hour(s) × {formatCurrency(b.fareBreakdown.hourlyRatePaise / 100)}
+                    </p>
+                  )}
 
                   {/* Overdue charge info */}
                   {b.overdueCharge > 0 && (
@@ -455,12 +532,13 @@ Status: ${receipt.status}
                   {b.bookingStatus === 'confirmed' && b.paymentStatus !== 'completed' && (
                     <button
                       onClick={() => handlePay(b._id)}
-                      className="btn-success text-sm py-1.5 px-3"
+                      disabled={payingBookingId === b._id}
+                      className="btn-success text-sm py-1.5 px-3 disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      Pay Now
+                      {payingBookingId === b._id ? 'Opening checkout…' : 'Pay Now'}
                     </button>
                   )}
-                  {['confirmed', 'pending'].includes(b.bookingStatus) && (
+                  {['confirmed', 'pending'].includes(b.bookingStatus) && b.paymentStatus !== 'completed' && (
                     <button
                       onClick={() => handleCancel(b._id)}
                       className="btn-danger text-sm py-1.5 px-3"
