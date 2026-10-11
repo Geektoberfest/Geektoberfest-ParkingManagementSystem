@@ -146,13 +146,20 @@ const Navbar = () => {
     <nav className="sticky top-0 z-50 bg-white/80 dark:bg-dark-card/80 backdrop-blur-lg border-b border-gray-200 dark:border-dark-border">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex justify-between items-center h-16">
-          {/* Logo */}
-          <Link to="/" className="flex items-center gap-2">
-            <div className="w-9 h-9 bg-primary-600 rounded-lg flex items-center justify-center">
-              <span className="text-white font-bold text-lg">P</span>
-            </div>
-            <span className="text-xl font-bold text-gray-900 dark:text-white">
-              Smart<span className="text-primary-600">Park</span>
+          {/* Brand */}
+          <Link to="/" className="flex items-center gap-2 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-dark-card" aria-label="SmartPark home">
+            <img
+              src="/images/smartpark-favicon.png"
+              alt=""
+              className="h-12 w-12 rounded-lg object-cover"
+            />
+            <span className="flex flex-col leading-none">
+              <span className="text-xl font-bold text-gray-900 dark:text-white">
+                Smart<span className="text-primary-600 dark:text-primary-400">Park</span>
+              </span>
+              <span className="mt-1 text-[7px] font-semibold uppercase tracking-[0.14em] text-gray-500 dark:text-gray-400">
+                Intelligent Parking Management System
+              </span>
             </span>
           </Link>
 

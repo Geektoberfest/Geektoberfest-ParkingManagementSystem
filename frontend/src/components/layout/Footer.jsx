@@ -48,13 +48,12 @@ const Footer = () => {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-10">
           {/* Brand */}
           <div>
-            <Link to="/" className="flex items-center gap-2 mb-4 group">
-              <div className="w-9 h-9 bg-primary-600 rounded-lg flex items-center justify-center">
-                <span className="text-white font-bold text-lg">P</span>
-              </div>
-              <span className="text-xl font-bold text-white group-hover:text-primary-400 transition-colors">
-                Smart<span className="text-primary-400">Park</span>
-              </span>
+            <Link to="/" className="mb-4 flex h-20 w-52 items-center justify-center rounded-lg bg-white/95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-950" aria-label="SmartPark home">
+              <img
+                src="/images/smartpark-logo.png"
+                alt="SmartPark"
+                className="h-20 w-52 scale-[1.35] object-contain"
+              />
             </Link>
             <p className="text-sm leading-relaxed">{description}</p>
           </div>
