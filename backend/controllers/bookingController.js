@@ -9,13 +9,17 @@ const { sendBookingConfirmationEmail, sendCancellationEmail } = require('../serv
 // @desc    Create booking
 // @route   POST /api/bookings/create
 exports.createBooking = async (req, res, next) => {
+  // Tracks a slot we atomically reserved so we can release it if a later step
+  // fails before the booking is persisted.
+  let claimedSlot = null;
   try {
     const { slotId, parkingLotId, startTime, endTime, vehicleNumber } = req.body;
 
-    // Check slot availability
-    const slot = await ParkingSlot.findById(slotId);
-    if (!slot || slot.status !== 'available') {
-      return res.status(400).json({ success: false, message: 'Slot is not available' });
+    // Validate the requested time range up front.
+    const start = new Date(startTime);
+    const end = new Date(endTime);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) {
+      return res.status(400).json({ success: false, message: 'Invalid booking time range.' });
     }
 
     // Get parking lot for pricing
@@ -24,11 +28,27 @@ exports.createBooking = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Parking lot not found' });
     }
 
-    // Calculate duration & cost
-    const start = new Date(startTime);
-    const end = new Date(endTime);
+    // ── Atomic slot claim (double-booking protection) ──
+    // A single-document update is atomic in MongoDB, so when several requests
+    // race for the same slot only one can flip it from 'available' to
+    // 'reserved'; every other request gets null and is rejected. This closes
+    // the check-then-create race that previously let two users reserve the
+    // same slot when their requests arrived at the same time.
+    claimedSlot = await ParkingSlot.findOneAndUpdate(
+      { _id: slotId, status: 'available', isActive: true },
+      { status: 'reserved' },
+      { new: true }
+    );
+    if (!claimedSlot) {
+      return res.status(409).json({
+        success: false,
+        message: 'This slot is already booked or unavailable. Please choose a different slot.',
+      });
+    }
 
-    // ── Booking Overlap Protection ──
+    // Defensive guard against the booking history in case a slot's status is
+    // ever stale: reject (and release the slot) if an active, non-cancelled
+    // booking already overlaps the requested window.
     const overlappingBooking = await Booking.findOne({
       slotId,
       bookingStatus: { $in: ['pending', 'confirmed', 'active'] },
@@ -36,11 +56,17 @@ exports.createBooking = async (req, res, next) => {
       endTime: { $gt: start },
     });
     if (overlappingBooking) {
+      await ParkingSlot.findByIdAndUpdate(slotId, { status: 'available' });
+      claimedSlot = null;
       return res.status(409).json({
         success: false,
         message: 'This slot is already booked for the selected time period. Please choose a different time or slot.',
       });
     }
+
+    const slot = claimedSlot;
+
+    // Calculate duration & cost
     const durationHours = Math.max(1, Math.ceil((end - start) / (1000 * 60 * 60)));
     const totalAmount = durationHours * lot.pricePerHour;
 
@@ -57,6 +83,10 @@ exports.createBooking = async (req, res, next) => {
       bookingStatus: 'confirmed',
     });
 
+    // The booking now owns the slot; cancel/complete will release it. Clear the
+    // rollback marker so the catch handler no longer frees the slot.
+    claimedSlot = null;
+
     // Generate QR code
     const qrData = JSON.stringify({
       bookingId: booking._id,
@@ -68,13 +98,10 @@ exports.createBooking = async (req, res, next) => {
     booking.qrCode = qrCode;
     await booking.save();
 
-    // Update slot status
-    slot.status = 'reserved';
-    await slot.save();
-
     // Update available slots count on the parking lot
     const availableCount = await ParkingSlot.countDocuments({ parkingLotId, status: 'available', isActive: true });
     await ParkingLot.findByIdAndUpdate(parkingLotId, { availableSlots: availableCount });
+
 
     // Emit real-time update
     const io = req.app.get('io');
@@ -114,6 +141,15 @@ exports.createBooking = async (req, res, next) => {
 
     res.status(201).json({ success: true, data: booking });
   } catch (error) {
+    // If we reserved a slot but failed before persisting the booking, release
+    // it so the slot does not get stuck in 'reserved' and leak availability.
+    if (claimedSlot) {
+      try {
+        await ParkingSlot.findByIdAndUpdate(claimedSlot._id, { status: 'available' });
+      } catch (releaseErr) {
+        console.error('Failed to release slot after booking error:', releaseErr.message);
+      }
+    }
     next(error);
   }
 };
