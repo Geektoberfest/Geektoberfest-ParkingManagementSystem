@@ -56,6 +56,9 @@ app.use('/api/', limiter);
 // Serve uploaded files
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
+// Webhook needs the raw body for HMAC verification - mount before express.json.
+app.use('/api/payments/webhook', express.raw({ type: '*/*', limit: '1mb' }));
+
 // Body parsing
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
