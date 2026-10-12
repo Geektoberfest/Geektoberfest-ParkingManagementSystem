@@ -16,6 +16,7 @@ const ParkingLots = lazy(() => import('./pages/public/ParkingLots'));
 const NearbyParking = lazy(() => import('./pages/public/NearbyParking'));
 const ParkingDetail = lazy(() => import('./pages/public/ParkingDetail'));
 const FAQ = lazy(() => import('./pages/public/FAQ'));
+const NotFound = lazy(() => import('./pages/public/NotFound'));
 
 // Auth pages
 const Login = lazy(() => import('./pages/auth/Login'));
@@ -109,16 +110,7 @@ const App = () => {
           </Route>
 
           {/* 404 */}
-          <Route
-            path="*"
-            element={
-              <div className="flex flex-col items-center justify-center min-h-[60vh] text-center px-4">
-                <h1 className="text-6xl font-bold text-primary-600 mb-4">404</h1>
-                <p className="text-xl text-gray-600 dark:text-gray-400 mb-6">Page not found</p>
-                <a href="/" className="btn-primary">Go Home</a>
-              </div>
-            }
-          />
+          <Route path="*" element={<NotFound />} />
         </Routes>
       </Suspense>
     </div>
