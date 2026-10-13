@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const User = require('../models/User');
 const { generateToken } = require('../middleware/auth');
+const { getJwtSecret } = require('../config/auth');
 const { sendPasswordResetEmail } = require('../services/emailService');
 
 const sanitizeEmail = (email = '') => email.trim().toLowerCase();
@@ -22,6 +23,14 @@ exports.register = async (req, res, next) => {
     const { name, email, password, vehicleNumber, phoneNumber } = req.body;
     const normalizedEmail = sanitizeEmail(email);
 
+    // Do this before writing the account. Otherwise an unset JWT secret can
+    // create an account that cannot be used and blocks a later retry.
+    try {
+      getJwtSecret();
+    } catch (tokenError) {
+      return res.status(500).json({ success: false, message: 'Server configuration error. Please try again later.' });
+    }
+
     const existingUser = await User.findOne({ email: normalizedEmail });
     if (existingUser) {
       return res.status(400).json({ success: false, message: 'Email already registered' });
@@ -36,13 +45,25 @@ exports.register = async (req, res, next) => {
       phoneNumber,
     });
 
-    const token = generateToken(user._id);
+    let token;
+    try {
+      token = generateToken(user._id);
+    } catch (tokenError) {
+      return res.status(500).json({ success: false, message: 'Server configuration error. Please try again later.' });
+    }
+
     res.status(201).json({
       success: true,
       token,
       user: formatUser(user),
     });
   } catch (error) {
+    // Concurrent registration races can still hit the unique email index even
+    // after the findOne check above. Return a safe message instead of the
+    // generic duplicate-key message so internals are not exposed.
+    if (error.code === 11000) {
+      return res.status(400).json({ success: false, message: 'Email already registered' });
+    }
     next(error);
   }
 };
@@ -92,6 +113,12 @@ exports.login = async (req, res, next) => {
     const { email, password } = req.body;
     const normalizedEmail = sanitizeEmail(email);
 
+    try {
+      getJwtSecret();
+    } catch (tokenError) {
+      return res.status(500).json({ success: false, message: 'Server configuration error. Please try again later.' });
+    }
+
     const user = await User.findOne({ email: normalizedEmail }).select('+password');
     if (!user) {
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
@@ -102,7 +129,13 @@ exports.login = async (req, res, next) => {
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
 
-    const token = generateToken(user._id);
+    let token;
+    try {
+      token = generateToken(user._id);
+    } catch (tokenError) {
+      return res.status(500).json({ success: false, message: 'Server configuration error. Please try again later.' });
+    }
+
     res.json({
       success: true,
       token,

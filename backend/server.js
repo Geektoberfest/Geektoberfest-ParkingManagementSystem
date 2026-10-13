@@ -9,6 +9,7 @@ const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 
 const connectDB = require('./config/db');
+const { validateRuntimeConfiguration } = require('./config/auth');
 const errorHandler = require('./middleware/errorHandler');
 const socketHandler = require('./services/socketHandler');
 const seedAdmin = require('./services/seedAdmin');
@@ -100,15 +101,23 @@ app.use(errorHandler);
 const PORT = process.env.PORT || 5000;
 
 const startServer = async () => {
-  await connectDB();
-  await seedAdmin();
-  startBookingScheduler(io);
-  server.listen(PORT, () => {
-    console.log(`🚗 SmartPark Server running on port ${PORT}`);
-    console.log(`📡 Socket.io ready for real-time updates`);
-  });
+  try {
+    validateRuntimeConfiguration();
+    await connectDB();
+    await seedAdmin();
+    startBookingScheduler(io);
+    server.listen(PORT, () => {
+      console.log(`🚗 SmartPark Server running on port ${PORT}`);
+      console.log(`📡 Socket.io ready for real-time updates`);
+    });
+  } catch (error) {
+    console.error(`Server startup failed: ${error.message}`);
+    process.exitCode = 1;
+  }
 };
 
-startServer();
+if (require.main === module) {
+  startServer();
+}
 
-module.exports = { app, server };
+module.exports = { app, server, startServer };
