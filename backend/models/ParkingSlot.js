@@ -34,6 +34,15 @@ const parkingSlotSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    // Short-lived lock taken while a booking is being created (see services/slotLock.js)
+    bookingLockToken: {
+      type: String,
+      default: null,
+    },
+    bookingLockExpiresAt: {
+      type: Date,
+      default: null,
+    },
   },
   { timestamps: true }
 );
