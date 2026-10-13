@@ -84,6 +84,12 @@ app.get('/api/health', (req, res) => {
   res.json({ success: true, message: 'SmartPark API is running', timestamp: new Date() });
 });
 
+// Keep unknown API paths as API errors. The frontend is deployed separately and
+// must not be served for requests to /api or /api/*.
+app.use('/api', (req, res) => {
+  res.status(404).json({ success: false, message: 'API endpoint not found' });
+});
+
 // Error handler
 app.use(errorHandler);
 
