@@ -6,6 +6,10 @@ node_modules/
 .env.*
 !.env.example
 
+# Payment provider secrets (never commit)
+razorpay*.csv
+*api_keys*.csv
+
 # Build files
 dist/
 build/
