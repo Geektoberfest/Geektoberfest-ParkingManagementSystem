@@ -3,6 +3,7 @@ const router = express.Router();
 const {
   getParkingLots, getParkingLot, createParkingLot,
   updateParkingLot, deleteParkingLot,
+  getParkingFilters,
   getParkingSlots, recommendSlot, updateSlotStatus,
   uploadParkingImages, deleteParkingImage,
 } = require('../controllers/parkingController');
@@ -13,6 +14,8 @@ const upload = require('../middleware/upload');
 
 // Parking lots
 router.get('/', getParkingLots);
+// Filter choices must be declared before the /:id route
+router.get('/filters', getParkingFilters);
 router.get('/:id', getParkingLot);
 router.post('/', protect, adminOnly, parkingLotValidation, validate, createParkingLot);
 router.put('/:id', protect, adminOnly, updateParkingLot);
