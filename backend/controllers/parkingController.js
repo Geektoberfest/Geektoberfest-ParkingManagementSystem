@@ -2,6 +2,11 @@ const ParkingLot = require('../models/ParkingLot');
 const ParkingFloor = require('../models/ParkingFloor');
 const ParkingSlot = require('../models/ParkingSlot');
 const Review = require('../models/Review');
+const {
+  SLOT_VEHICLE_TYPES,
+  normalizeOptionList,
+  buildParkingLotPipeline,
+} = require('../utils/parkingFilters');
 const fs = require('fs');
 const path = require('path');
 
@@ -13,26 +18,41 @@ const canAdminManageLot = (lot, adminId) => {
 
 // @desc    Get all parking lots
 // @route   GET /api/parking-lots
+// @query   city, search, area, availability (all|available|full),
+//          slotType (car|motorcycle|truck|ev), minPrice, maxPrice
 exports.getParkingLots = async (req, res, next) => {
   try {
-    const { city, search } = req.query;
-    let query = { isActive: true };
-    if (city) query.city = new RegExp(city, 'i');
-    if (search) query.name = new RegExp(search, 'i');
+    // Available slot counts and slot based filters are computed from the real
+    // slot records, so the stored counters are never mutated.
+    const [parkingLots, total] = await Promise.all([
+      ParkingLot.aggregate(buildParkingLotPipeline(req.query)),
+      ParkingLot.countDocuments({ isActive: true }),
+    ]);
 
-    const parkingLots = await ParkingLot.find(query).sort('-createdAt');
+    res.json({ success: true, count: parkingLots.length, total, data: parkingLots });
+  } catch (error) {
+    next(error);
+  }
+};
 
-    // Recalculate available slots for each lot
-    for (let lot of parkingLots) {
-      const availableCount = await ParkingSlot.countDocuments({
-        parkingLotId: lot._id,
-        status: 'available',
-        isActive: true,
-      });
-      lot.availableSlots = availableCount;
-    }
+// @desc    Get the filter choices available for the public parking listing
+// @route   GET /api/parking-lots/filters
+exports.getParkingFilters = async (req, res, next) => {
+  try {
+    const [cities, areas, slotTypes] = await Promise.all([
+      ParkingLot.distinct('city', { isActive: true }),
+      ParkingLot.distinct('area', { isActive: true }),
+      ParkingSlot.distinct('vehicleType', { isActive: true }),
+    ]);
 
-    res.json({ success: true, count: parkingLots.length, data: parkingLots });
+    res.json({
+      success: true,
+      data: {
+        cities: normalizeOptionList(cities),
+        areas: normalizeOptionList(areas),
+        slotTypes: normalizeOptionList(slotTypes).filter((type) => SLOT_VEHICLE_TYPES.includes(type)),
+      },
+    });
   } catch (error) {
     next(error);
   }
