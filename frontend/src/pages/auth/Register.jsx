@@ -5,6 +5,9 @@ import { useAuth } from '../../context/AuthContext';
 import toast from 'react-hot-toast';
 import { HiOutlineMail, HiOutlineLockClosed, HiOutlineUser, HiOutlinePhone, HiOutlineTruck } from 'react-icons/hi';
 
+const getRequestErrorMessage = (error, fallback) =>
+  error.response?.data?.message || error.response?.data?.errors?.[0]?.msg || fallback;
+
 const Register = () => {
   const [form, setForm] = useState({
     name: '', email: '', password: '', confirmPassword: '',
@@ -31,7 +34,7 @@ const Register = () => {
       toast.success('Account created successfully!');
       navigate('/dashboard');
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Registration failed');
+      toast.error(getRequestErrorMessage(err, 'Registration failed'));
     } finally {
       setLoading(false);
     }

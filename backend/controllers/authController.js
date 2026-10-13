@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const User = require('../models/User');
 const { generateToken } = require('../middleware/auth');
+const { getJwtSecret } = require('../config/auth');
 const { sendPasswordResetEmail } = require('../services/emailService');
 
 const sanitizeEmail = (email = '') => email.trim().toLowerCase();
@@ -21,6 +22,14 @@ exports.register = async (req, res, next) => {
   try {
     const { name, email, password, vehicleNumber, phoneNumber } = req.body;
     const normalizedEmail = sanitizeEmail(email);
+
+    // Do this before writing the account. Otherwise an unset JWT secret can
+    // create an account that cannot be used and blocks a later retry.
+    try {
+      getJwtSecret();
+    } catch (tokenError) {
+      return res.status(500).json({ success: false, message: 'Server configuration error. Please try again later.' });
+    }
 
     const existingUser = await User.findOne({ email: normalizedEmail });
     if (existingUser) {
@@ -103,6 +112,12 @@ exports.login = async (req, res, next) => {
   try {
     const { email, password } = req.body;
     const normalizedEmail = sanitizeEmail(email);
+
+    try {
+      getJwtSecret();
+    } catch (tokenError) {
+      return res.status(500).json({ success: false, message: 'Server configuration error. Please try again later.' });
+    }
 
     const user = await User.findOne({ email: normalizedEmail }).select('+password');
     if (!user) {

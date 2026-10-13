@@ -5,6 +5,9 @@ import { useAuth } from '../../context/AuthContext';
 import toast from 'react-hot-toast';
 import { HiOutlineMail, HiOutlineLockClosed } from 'react-icons/hi';
 
+const getRequestErrorMessage = (error, fallback) =>
+  error.response?.data?.message || error.response?.data?.errors?.[0]?.msg || fallback;
+
 const Login = () => {
   const [form, setForm] = useState({ email: '', password: '' });
   const [loading, setLoading] = useState(false);
@@ -27,7 +30,7 @@ const Login = () => {
         navigate(data.user.role === 'admin' ? '/admin' : '/dashboard', { replace: true });
       }
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Login failed');
+      toast.error(getRequestErrorMessage(err, 'Login failed'));
     } finally {
       setLoading(false);
     }

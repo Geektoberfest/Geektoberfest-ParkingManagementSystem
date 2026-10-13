@@ -1,339 +1,314 @@
-const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
-
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 const mongoose = require('mongoose');
 
-const connectDB = require('../config/db');
 const User = require('../models/User');
 const { register, login } = require('../controllers/authController');
+const { protect } = require('../middleware/auth');
+const { validateRuntimeConfiguration } = require('../config/auth');
+const { registerValidation, validate } = require('../middleware/validate');
 
-// Regression tests for issue #1 — registration failure.
-//
-// Root cause (verified locally): the tracked backend/.env is missing
-// JWT_SECRET, so generateToken() throws an unhandled
-// "secretOrPrivateKey must have a value" error and every registration
-// (and login) fails before reaching User.create().
-//
-// Fix in this issue:
-//  - authController.register now catches token-generation failures and
-//    returns a safe 500 instead of an unhandled rejection.
-//  - authController.register also handles concurrent duplicate-key races
-//    (MongoDB error code 11000) with a safe "Email already registered"
-//    400 response.
-//
-// Test design:
-//  - The JWTsecret guard test is the centerpiece and runs unconditionally.
-//  - DB-dependent tests are skipped when the Atlas cluster is unreachable
-//    from this environment (verified: DNS ENOTFOUND for the SRV host), so
-//    `npm test` stays green and the skip reason is explicit.
+const TEST_JWT_SECRET = 'issue-1-test-secret';
 
-let clusterReachable = false;
-
-const TEST_JWT_SECRET = 'test-jwt-secret-for-registration-issue-1-' + Date.now();
-
-function uniqueEmail() {
-  return `register-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@smartpark.test`;
+function createRequest(body = {}) {
+  return { body };
 }
 
-// Minimal express-like req/res spy so the controller can be invoked directly
-// without booting the full HTTP server.
-function mockReqRes(body = {}) {
-  const req = { body };
+function createResponse() {
   const captured = {};
-  const res = {
+  const response = {
     status(code) {
-      assert.equal(typeof code, 'number');
-      captured.statusCode = code;
-      return {
-        json(payload) {
-          captured.payload = payload;
-          return res;
-        },
-      };
+      captured.status = code;
+      return response;
+    },
+    json(payload) {
+      captured.payload = payload;
+      return response;
     },
   };
-  const next = (err) => {
-    captured.forwardedError = err;
-  };
-  return { req, res, next, captured };
+  return { response, captured };
 }
 
-test.describe('issue #1 — registration failure', () => {
-  test.before(async () => {
-    // connectDB() can resolve before the underlying connection is actually
-    // usable (Mongoose may be buffering). Wait for a real open state and
-    // confirm with a short-timed probe before marking the cluster reachable.
-    try {
-      await connectDB();
+function withEnvironment(values, callback) {
+  const previous = Object.fromEntries(
+    Object.keys(values).map((key) => [key, process.env[key]])
+  );
 
-      const connected = await new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error('connection open timeout')), 8000);
-        function onOpen() {
-          clearTimeout(timeout);
-          mongoose.connection.removeListener('error', onError);
-          mongoose.connection.removeListener('open', onOpen);
-          resolve();
-        }
-        function onError(err) {
-          clearTimeout(timeout);
-          mongoose.connection.removeListener('open', onOpen);
-          mongoose.connection.removeListener('error', onError);
-          reject(err);
-        }
-        if (mongoose.connection.readyState === 1) {
-          clearTimeout(timeout);
-          resolve();
-        } else {
-          mongoose.connection.once('open', onOpen);
-          mongoose.connection.once('error', onError);
-        }
-      });
+  for (const [key, value] of Object.entries(values)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
 
-      // Probe with a short maxTimeMS so a reachable-but-slow/unavailable
-      // cluster is detected quickly rather than buffering for 10s.
-      await User.findOne({ email: 'probe-' + Date.now() + '@t.st' }).maxTimeMS(1500);
-      clusterReachable = true;
-    } catch (e) {
-      clusterReachable = false;
-    } finally {
-      try { await mongoose.disconnect(); } catch (_) {}
+  return Promise.resolve(callback()).finally(() => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
     }
   });
+}
 
-  test.test('can reach the application database', () => {
-    assert.equal(clusterReachable, true, 'cluster must be reachable; if skipped, the Atlas SRV host is DNS-unresolvable from this environment');
+async function runRegistrationValidation(body) {
+  const request = createRequest(body);
+  const { response, captured } = createResponse();
+  let continued = false;
+
+  for (const validator of registerValidation) {
+    await validator.run(request);
+  }
+  validate(request, response, () => {
+    continued = true;
   });
 
-  // ── Unconditional regression: the actual issue fix ──────────────────────
+  return { continued, captured };
+}
 
-  test.test('with no JWT secret configured, registration returns a clean 500 instead of throwing', async () => {
-    // Before the fix: missing JWT_SECRET caused generateToken() to throw an
-    // unhandled "secretOrPrivateKey must have a value" rejection, so every
-    // registration failed before reaching User.create().
-    //
-    // After the fix: the controller catches token-generation failures and
-    // returns a safe 500, so the failure is informative and controlled.
-    //
-    // To isolate the guard path from the database, we stub User.findOne to
-    // return null (no existing user) and User.create to return a minimal
-    // document, then invoke the controller with no JWT secret set.
-
-    const previousSecret = process.env.JWT_SECRET;
-    delete process.env.JWT_SECRET;
-
-    let origFindOne, origCreate;
-    const stubCalls = [];
-    try {
-      origFindOne = User.findOne;
-      origCreate = User.create;
-      User.findOne = async function () { stubCalls.push('findOne'); return null; };
-      User.create = async function () {
-        stubCalls.push('create');
-        return {
-          _id: { toString: () => 'mock-user-id' },
-          name: 'x',
-          email: 'x',
-          role: 'user',
-          isMasterAdmin: false,
-          vehicleNumber: '',
-          phoneNumber: '',
-        };
-      };
-
-      // Use a wrapped res/next so we can assert on exactly what the
-      // controller called, independent of mock-object reuse edge cases.
-      const statusCalls = [];
-      const jsonCalls = [];
-      const nextCalls = [];
-      const wrappedRes = {
-        status(code) {
-          statusCalls.push(code);
-          return {
-            json(payload) {
-              jsonCalls.push(payload);
-              return wrappedRes;
-            },
-          };
-        },
-      };
-      const wrappedNext = (err) => { nextCalls.push(err); };
-
-      const email = uniqueEmail() + '-nosecret';
-      const { req } = mockReqRes({
-        name: 'No Secret User',
-        email,
-        password: 'password123',
-      });
-
-      try {
-        await register(req, wrappedRes, wrappedNext);
-      } catch (e) {
-        // Any throw from the controller itself is a test failure — the fix
-        // must return a response, not throw.
-        assert.fail('register threw instead of returning a response: ' + (e && e.message ? e.message : e));
+test.describe('Issue #1 registration and login', () => {
+  test('startup validation rejects a missing JWT secret without exposing a value', async () => {
+    await withEnvironment(
+      { MONGODB_URI: 'mongodb://example.invalid/smartpark', JWT_SECRET: undefined },
+      () => {
+        assert.throws(
+          () => validateRuntimeConfiguration(),
+          (error) => error.code === 'CONFIGURATION_ERROR' && error.message.includes('JWT_SECRET')
+        );
       }
-
-      assert.ok(
-        statusCalls[0] === 500,
-        'registration without a JWT secret should return a clean 500, got ' +
-          (statusCalls[0] != null ? statusCalls[0] : 'no status set') +
-          ' | payload: ' + JSON.stringify(jsonCalls[0]) +
-          ' | nextErr: ' + (nextCalls[0] ? (nextCalls[0].name || nextCalls[0]) : null) +
-          ' | stubCalls: ' + JSON.stringify(stubCalls)
-      );
-      assert.equal(jsonCalls[0].success, false);
-      assert.ok(
-        typeof jsonCalls[0].message === 'string' &&
-          jsonCalls[0].message.length > 0,
-        '500 response must include a non-empty message, got: ' +
-          JSON.stringify(jsonCalls[0])
-      );
-      assert.ok(
-        nextCalls.length === 0,
-        'controller must not forward an unhandled exception to next when the secret is missing'
-      );
-    } finally {
-      User.findOne = origFindOne;
-      User.create = origCreate;
-      process.env.JWT_SECRET = previousSecret;
-    }
-  });
-
-  test.test('JWT library itself rejects an empty secret', async () => {
-    const jwt = require('jsonwebtoken');
-    let threw = false;
-    let message = '';
-    try {
-      jwt.sign({ id: 'x' }, '', { expiresIn: '7d' });
-    } catch (e) {
-      threw = true;
-      message = String(e.message || e);
-    }
-    assert.ok(threw, 'signing with empty secret must throw');
-    assert.ok(
-      message.includes('secretOrPrivateKey must have a value') ||
-        message.includes('secret or private key') ||
-        message.includes('secretOrPublicKey') ||
-        message.includes('cannot be empty'),
-      'JWT library must reject an empty secret, got: ' + message
     );
   });
 
-  // ── DB-dependent happy-path tests (skipped when cluster unreachable) ───
+  test('registration stops before any database write when JWT configuration is missing', async () => {
+    const originalFindOne = User.findOne;
+    const originalCreate = User.create;
+    let databaseTouched = false;
+    User.findOne = async () => {
+      databaseTouched = true;
+      return null;
+    };
+    User.create = async () => {
+      databaseTouched = true;
+      return null;
+    };
 
-  if (clusterReachable) {
-    // Restore a configured secret for the happy-path DB integration tests.
-    const previous = process.env.JWT_SECRET;
-    process.env.JWT_SECRET = TEST_JWT_SECRET;
+    try {
+      await withEnvironment({ JWT_SECRET: undefined }, async () => {
+        const { response, captured } = createResponse();
+        await register(
+          createRequest({ name: 'No Secret', email: 'no-secret@example.com', password: 'password123' }),
+          response,
+          assert.fail
+        );
 
-    test.test('valid registration succeeds and returns token + sanitized user', async () => {
-      const email = uniqueEmail();
-      const { req, res, next } = mockReqRes({
-        name: 'Test User',
-        email,
-        password: 'password123',
-        vehicleNumber: 'MH 01 AB 1234',
-        phoneNumber: '+91 98765 43210',
+        assert.equal(captured.status, 500);
+        assert.equal(captured.payload.success, false);
+        assert.equal(captured.payload.message, 'Server configuration error. Please try again later.');
+        assert.equal(databaseTouched, false);
       });
+    } finally {
+      User.findOne = originalFindOne;
+      User.create = originalCreate;
+    }
+  });
 
-      await register(req, res, next);
+  test('registration returns a verifiable token and a sanitized user with normalized email', async () => {
+    const originalFindOne = User.findOne;
+    const originalCreate = User.create;
+    let createPayload;
+    const createdUser = {
+      _id: new mongoose.Types.ObjectId(),
+      name: 'Test User',
+      email: 'test@example.com',
+      password: '$2a$12$hashed-password-never-returned',
+      role: 'user',
+      isMasterAdmin: false,
+      vehicleNumber: 'MH 01 AB 1234',
+      phoneNumber: '',
+    };
+    User.findOne = async () => null;
+    User.create = async (payload) => {
+      createPayload = payload;
+      return createdUser;
+    };
 
-      assert.equal(res.captured.statusCode, 201, 'registration should return 201');
-      assert.equal(res.captured.payload.success, true);
-      assert.ok(res.captured.payload.token, 'response must include a token');
-      assert.equal(res.captured.payload.user.email, email, 'email should be stored normalized');
-      assert.equal(res.captured.payload.user.name, 'Test User');
-      assert.ok(res.captured.payload.user._id, 'response must include a user id');
-      assert.equal(res.captured.payload.user.role, 'user');
-      assert.ok(typeof res.captured.payload.user.isMasterAdmin === 'boolean');
-      assert.equal(res.captured.payload.user.password, undefined, 'password must not be in response');
+    try {
+      await withEnvironment({ JWT_SECRET: TEST_JWT_SECRET, JWT_EXPIRE: '7d' }, async () => {
+        const { response, captured } = createResponse();
+        await register(
+          createRequest({
+            name: 'Test User',
+            email: '  TEST@Example.com ',
+            password: 'password123',
+            vehicleNumber: 'MH 01 AB 1234',
+          }),
+          response,
+          assert.fail
+        );
 
-      const stored = await User.findOne({ email });
-      assert.ok(stored, 'user must be persisted in MongoDB');
-      assert.notStrictEqual(stored.password, 'password123', 'password must be hashed');
-      assert.ok(stored.password.startsWith('$2'), 'stored password must look like a bcrypt hash');
+        assert.equal(captured.status, 201);
+        assert.equal(captured.payload.success, true);
+        assert.equal(createPayload.email, 'test@example.com');
+        assert.equal(captured.payload.user.email, 'test@example.com');
+        assert.equal(Object.hasOwn(captured.payload.user, 'password'), false);
+        assert.equal(jwt.verify(captured.payload.token, TEST_JWT_SECRET).id, createdUser._id.toString());
+      });
+    } finally {
+      User.findOne = originalFindOne;
+      User.create = originalCreate;
+    }
+  });
+
+  test('the User model hashes a password exactly once before saving', async () => {
+    const user = new User({
+      name: 'Hash Test',
+      email: 'hash-test@example.com',
+      password: 'password123',
     });
 
-    test.test('duplicate email is rejected with a clear message', async () => {
-      const email = uniqueEmail();
-      {
-        const { req, res, next } = mockReqRes({ name: 'First', email, password: 'password123' });
-        await register(req, res, next);
-        assert.equal(res.captured.statusCode, 201);
+    await new Promise((resolve, reject) => {
+      User.schema.s.hooks.execPre('save', user, [], (error) => (error ? reject(error) : resolve()));
+    });
+
+    const hashedPassword = user.password;
+    assert.notEqual(hashedPassword, 'password123');
+    assert.equal(await bcrypt.compare('password123', hashedPassword), true);
+
+    // Mongoose clears modified paths after a real save. Mirror that state
+    // before exercising the hook again to verify an unchanged hash is kept.
+    user.$__reset();
+    await new Promise((resolve, reject) => {
+      User.schema.s.hooks.execPre('save', user, [], (error) => (error ? reject(error) : resolve()));
+    });
+    assert.equal(user.password, hashedPassword);
+  });
+
+  test('a duplicate-key race returns a safe validation response', async () => {
+    const originalFindOne = User.findOne;
+    const originalCreate = User.create;
+    User.findOne = async () => null;
+    User.create = async () => {
+      const error = new Error('duplicate key');
+      error.code = 11000;
+      throw error;
+    };
+
+    try {
+      await withEnvironment({ JWT_SECRET: TEST_JWT_SECRET }, async () => {
+        const { response, captured } = createResponse();
+        await register(
+          createRequest({ name: 'Race User', email: 'race@example.com', password: 'password123' }),
+          response,
+          assert.fail
+        );
+        assert.equal(captured.status, 400);
+        assert.deepEqual(captured.payload, { success: false, message: 'Email already registered' });
+      });
+    } finally {
+      User.findOne = originalFindOne;
+      User.create = originalCreate;
+    }
+  });
+
+  test('registration validation rejects missing fields, invalid emails, and short passwords', async () => {
+    const missingName = await runRegistrationValidation({ email: 'valid@example.com', password: 'password123' });
+    const invalidEmail = await runRegistrationValidation({ name: 'Valid', email: 'invalid', password: 'password123' });
+    const shortPassword = await runRegistrationValidation({ name: 'Valid', email: 'valid@example.com', password: 'short' });
+
+    for (const result of [missingName, invalidEmail, shortPassword]) {
+      assert.equal(result.continued, false);
+      assert.equal(result.captured.status, 400);
+      assert.equal(result.captured.payload.success, false);
+      assert.ok(result.captured.payload.errors.length > 0);
+    }
+  });
+
+  test('login succeeds for a registered user and signs with the same configuration', async () => {
+    const originalFindOne = User.findOne;
+    const user = {
+      _id: new mongoose.Types.ObjectId(),
+      name: 'Login User',
+      email: 'login@example.com',
+      password: '$2a$12$not-exposed',
+      role: 'user',
+      isMasterAdmin: false,
+      vehicleNumber: '',
+      phoneNumber: '',
+      comparePassword: async (password) => password === 'password123',
+    };
+    User.findOne = () => ({ select: async () => user });
+
+    try {
+      await withEnvironment({ JWT_SECRET: TEST_JWT_SECRET, JWT_EXPIRE: '7d' }, async () => {
+        const { response, captured } = createResponse();
+        await login(createRequest({ email: ' LOGIN@example.com ', password: 'password123' }), response, assert.fail);
+
+        assert.equal(captured.status, undefined);
+        assert.equal(captured.payload.success, true);
+        assert.equal(captured.payload.user.email, 'login@example.com');
+        assert.equal(Object.hasOwn(captured.payload.user, 'password'), false);
+        assert.equal(jwt.verify(captured.payload.token, TEST_JWT_SECRET).id, user._id.toString());
+      });
+    } finally {
+      User.findOne = originalFindOne;
+    }
+  });
+
+  test('the authentication middleware accepts a token issued by login configuration', async () => {
+    const originalFindById = User.findById;
+    const tokenUser = { _id: new mongoose.Types.ObjectId(), email: 'protected@example.com' };
+    User.findById = async (id) => (id === tokenUser._id.toString() ? tokenUser : null);
+
+    try {
+      await withEnvironment({ JWT_SECRET: TEST_JWT_SECRET }, async () => {
+        const token = jwt.sign({ id: tokenUser._id.toString() }, TEST_JWT_SECRET, { expiresIn: '7d' });
+        const request = { headers: { authorization: `Bearer ${token}` } };
+        const { response, captured } = createResponse();
+        let continued = false;
+
+        await protect(request, response, () => {
+          continued = true;
+        });
+
+        assert.equal(continued, true);
+        assert.equal(captured.status, undefined);
+        assert.equal(request.user, tokenUser);
+      });
+    } finally {
+      User.findById = originalFindById;
+    }
+  });
+
+  test(
+    'database-backed registration and login flow',
+    { skip: process.env.AUTH_TEST_MONGODB_URI ? false : 'Set AUTH_TEST_MONGODB_URI to an isolated MongoDB database to run this integration test.' },
+    async () => {
+      const email = `issue-1-${Date.now()}@smartpark.test`;
+      const originalUri = process.env.MONGODB_URI;
+      try {
+        process.env.MONGODB_URI = process.env.AUTH_TEST_MONGODB_URI;
+        await mongoose.connect(process.env.AUTH_TEST_MONGODB_URI, { serverSelectionTimeoutMS: 10_000 });
+        await withEnvironment({ JWT_SECRET: TEST_JWT_SECRET, JWT_EXPIRE: '7d' }, async () => {
+          const registration = createResponse();
+          await register(
+            createRequest({ name: 'Integration User', email, password: 'password123' }),
+            registration.response,
+            assert.fail
+          );
+          assert.equal(registration.captured.status, 201);
+          assert.equal(jwt.verify(registration.captured.payload.token, TEST_JWT_SECRET).id, registration.captured.payload.user._id.toString());
+
+          const storedUser = await User.findOne({ email }).select('+password');
+          assert.equal(await bcrypt.compare('password123', storedUser.password), true);
+
+          const loginResponse = createResponse();
+          await login(createRequest({ email, password: 'password123' }), loginResponse.response, assert.fail);
+          assert.equal(loginResponse.captured.payload.success, true);
+        });
+      } finally {
+        await User.deleteOne({ email }).catch(() => {});
+        await mongoose.disconnect().catch(() => {});
+        if (originalUri === undefined) delete process.env.MONGODB_URI;
+        else process.env.MONGODB_URI = originalUri;
       }
-
-      const { req, res, next } = mockReqRes({ name: 'Second', email, password: 'password123' });
-      await register(req, res, next);
-
-      assert.equal(res.captured.statusCode, 400);
-      assert.equal(res.captured.payload.success, false);
-      assert.equal(res.captured.payload.message, 'Email already registered');
-    });
-
-    test.test('short password is rejected by the model validation layer', async () => {
-      const email = uniqueEmail();
-      const { req, res, next } = mockReqRes({ name: 'Short', email, password: 'short' });
-      await register(req, res, next);
-
-      assert.ok(res.captured.forwardedError, 'short password should produce a validation error');
-      assert.ok(
-        res.captured.forwardedError.name === 'ValidationError' ||
-          res.captured.forwardedError.statusCode === 400,
-        'short password should map to a 400-ish response'
-      );
-    });
-
-    test.test('invalid email is rejected by the model validation layer', async () => {
-      const { req, res, next } = mockReqRes({
-        name: 'Bad Email',
-        email: 'not-an-email',
-        password: 'password123',
-      });
-      await register(req, res, next);
-
-      assert.ok(res.captured.forwardedError, 'invalid email should produce a validation error');
-      assert.ok(
-        res.captured.forwardedError.name === 'ValidationError' ||
-          res.captured.forwardedError.statusCode === 400,
-        'invalid email should map to a 400-ish response'
-      );
-    });
-
-    test.test('registration token can be verified with the configured secret', async () => {
-      const email = uniqueEmail();
-      const { req, res, next } = mockReqRes({
-        name: 'Verify Token',
-        email,
-        password: 'password123',
-      });
-      await register(req, res, next);
-
-      const jwt = require('jsonwebtoken');
-      const decoded = jwt.verify(res.captured.payload.token, TEST_JWT_SECRET);
-      assert.equal(decoded.id, res.captured.payload.user._id.toString(), 'token payload id must match user id');
-    });
-
-    test.test('confirmation: login still works after registration', async () => {
-      const email = uniqueEmail();
-      {
-        const { req, res, next } = mockReqRes({ name: 'Login Later', email, password: 'loginme123' });
-        await register(req, res, next);
-        assert.equal(res.captured.statusCode, 201);
-      }
-
-      const { req, res, next } = mockReqRes({ email, password: 'loginme123' });
-      await login(req, res, next);
-
-      assert.equal(res.captured.statusCode, 200, 'login should return 200');
-      assert.equal(res.captured.payload.success, true);
-      assert.ok(res.captured.payload.token, 'login must return a token');
-      assert.equal(res.captured.payload.user.email, email);
-    });
-
-    test.after(() => {
-      process.env.JWT_SECRET = previous;
-    });
-  }
+    }
+  );
 });

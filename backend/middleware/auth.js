@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
+const { getJwtSecret, getJwtExpiration } = require('../config/auth');
 
 // Protect routes - verify JWT token
 const protect = async (req, res, next) => {
@@ -13,7 +14,7 @@ const protect = async (req, res, next) => {
   }
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const decoded = jwt.verify(token, getJwtSecret());
     req.user = await User.findById(decoded.id);
     if (!req.user) {
       return res.status(401).json({ success: false, message: 'User not found' });
@@ -35,7 +36,7 @@ const adminOnly = (req, res, next) => {
 
 // Generate JWT
 const generateToken = (id) => {
-  return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRE || '7d' });
+  return jwt.sign({ id }, getJwtSecret(), { expiresIn: getJwtExpiration() });
 };
 
 module.exports = { protect, adminOnly, generateToken };
