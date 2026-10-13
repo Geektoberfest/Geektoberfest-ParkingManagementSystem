@@ -8,6 +8,9 @@ const DEFAULT_SETTINGS = [
   { key: 'supportPhone', value: '+91 98765 43210', label: 'Support Phone', category: 'general' },
   { key: 'cancellationFeePercent', value: 10, label: 'Cancellation Fee (%)', category: 'booking' },
   { key: 'maxBookingHours', value: 24, label: 'Max Booking Duration (hours)', category: 'booking' },
+  { key: 'parkingTaxPercent', value: 0, label: 'Parking Tax (%)', category: 'booking' },
+  { key: 'serviceFeeFlat', value: 0, label: 'Service Fee (₹ flat)', category: 'booking' },
+  { key: 'overdueMultiplier', value: 1, label: 'Overdue Rate Multiplier', category: 'booking' },
 ];
 
 const VALID_KEYS = DEFAULT_SETTINGS.map((s) => s.key);

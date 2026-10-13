@@ -9,6 +9,8 @@ import { formatCurrency, formatDateTime, getStatusBadge } from '../../utils/help
 import { QRCodeSVG } from 'qrcode.react';
 import { HiOutlineLocationMarker, HiOutlineMap, HiOutlineExclamation } from 'react-icons/hi';
 import { FiStar, FiLogIn, FiLogOut, FiDownload, FiX } from 'react-icons/fi';
+import { fetchQuote, payWithRazorpay } from '../../services/razorpayClient';
+import FareBreakdown from '../../components/parking/FareBreakdown';
 import { getSocket } from '../../services/socket';
 
 // Haversine distance
@@ -95,11 +97,33 @@ const MyBookings = () => {
 
   const handlePay = async (bookingId) => {
     try {
-      await api.post('/payments/process', { bookingId, paymentMethod: 'card' });
-      toast.success('Payment successful!');
+      // 1. Server-side quote so the user reviews the authoritative fare.
+      const quote = await fetchQuote({ bookingId });
+      setPayQuote({ bookingId, ...quote });
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Failed to load fare breakdown');
+    }
+  };
+
+  const [payQuote, setPayQuote] = useState(null);
+  const [paying, setPaying] = useState(false);
+
+  const handleConfirmRazorpayPay = async () => {
+    if (!payQuote) return;
+    setPaying(true);
+    try {
+      const booking = bookings.find((b) => b._id === payQuote.bookingId);
+      await payWithRazorpay({
+        booking: booking || payQuote.bookingId,
+        prefill: { email: user?.email || '', contact: user?.phoneNumber || '' },
+      });
+      toast.success('Payment verified successfully! (test mode)');
+      setPayQuote(null);
       fetchBookings();
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Payment failed');
+      toast.error(err.response?.data?.message || err.message || 'Payment failed');
+    } finally {
+      setPaying(false);
     }
   };
 
@@ -593,6 +617,35 @@ Status: ${receipt.status}
               >
                 Submit Review
               </button>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Razorpay fare review + checkout (test mode) */}
+      <AnimatePresence>
+        {payQuote && (
+          <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={() => !paying && setPayQuote(null)}>
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl max-w-md w-full p-6"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h2 className="text-xl font-bold text-gray-900 dark:text-white mb-1">Review fare</h2>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
+                Test mode — no real money moves. Amount is set by the server.
+              </p>
+              <FareBreakdown breakdown={payQuote.breakdown} />
+              <div className="flex gap-2 mt-4">
+                <button onClick={() => setPayQuote(null)} disabled={paying} className="btn-secondary flex-1 disabled:opacity-50">
+                  Cancel
+                </button>
+                <button onClick={handleConfirmRazorpayPay} disabled={paying} className="btn-primary flex-1 disabled:opacity-50">
+                  {paying ? 'Opening Razorpay…' : `Pay ${formatCurrency(payQuote.amount)}`}
+                </button>
+              </div>
             </motion.div>
           </div>
         )}
