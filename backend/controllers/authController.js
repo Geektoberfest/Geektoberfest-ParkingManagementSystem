@@ -36,13 +36,25 @@ exports.register = async (req, res, next) => {
       phoneNumber,
     });
 
-    const token = generateToken(user._id);
+    let token;
+    try {
+      token = generateToken(user._id);
+    } catch (tokenError) {
+      return res.status(500).json({ success: false, message: 'Server configuration error. Please try again later.' });
+    }
+
     res.status(201).json({
       success: true,
       token,
       user: formatUser(user),
     });
   } catch (error) {
+    // Concurrent registration races can still hit the unique email index even
+    // after the findOne check above. Return a safe message instead of the
+    // generic duplicate-key message so internals are not exposed.
+    if (error.code === 11000) {
+      return res.status(400).json({ success: false, message: 'Email already registered' });
+    }
     next(error);
   }
 };
@@ -102,7 +114,13 @@ exports.login = async (req, res, next) => {
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
 
-    const token = generateToken(user._id);
+    let token;
+    try {
+      token = generateToken(user._id);
+    } catch (tokenError) {
+      return res.status(500).json({ success: false, message: 'Server configuration error. Please try again later.' });
+    }
+
     res.json({
       success: true,
       token,
