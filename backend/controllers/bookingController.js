@@ -5,6 +5,7 @@ const User = require('../models/User');
 const Notification = require('../models/Notification');
 const QRCode = require('qrcode');
 const { sendBookingConfirmationEmail, sendCancellationEmail } = require('../services/emailService');
+const { canAccessBooking } = require('../utils/bookingAccess');
 
 // @desc    Create booking
 // @route   POST /api/bookings/create
@@ -156,7 +157,7 @@ exports.cancelBooking = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Booking not found' });
     }
 
-    if (booking.userId.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
+    if (!canAccessBooking(booking, req.user)) {
       return res.status(403).json({ success: false, message: 'Not authorized' });
     }
 
@@ -226,6 +227,10 @@ exports.completeBooking = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Booking not found' });
     }
 
+    if (!canAccessBooking(booking, req.user)) {
+      return res.status(404).json({ success: false, message: 'Booking not found' });
+    }
+
     booking.bookingStatus = 'completed';
     booking.exitTime = new Date();
     await booking.save();
@@ -259,6 +264,12 @@ exports.getBooking = async (req, res, next) => {
     if (!booking) {
       return res.status(404).json({ success: false, message: 'Booking not found' });
     }
+
+    // Only the owner (or an admin) may read a booking. Answer as not found so
+    // other users cannot probe booking ids.
+    if (!canAccessBooking(booking, req.user)) {
+      return res.status(404).json({ success: false, message: 'Booking not found' });
+    }
     res.json({ success: true, data: booking });
   } catch (error) {
     next(error);
@@ -274,6 +285,10 @@ exports.checkIn = async (req, res, next) => {
       .populate('slotId', 'slotNumber');
 
     if (!booking) {
+      return res.status(404).json({ success: false, message: 'Booking not found' });
+    }
+
+    if (!canAccessBooking(booking, req.user)) {
       return res.status(404).json({ success: false, message: 'Booking not found' });
     }
 
@@ -317,6 +332,10 @@ exports.checkOut = async (req, res, next) => {
       .populate('slotId', 'slotNumber');
 
     if (!booking) {
+      return res.status(404).json({ success: false, message: 'Booking not found' });
+    }
+
+    if (!canAccessBooking(booking, req.user)) {
       return res.status(404).json({ success: false, message: 'Booking not found' });
     }
 
