@@ -4,16 +4,24 @@ import { formatCurrency } from '../../utils/helpers';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import toast from 'react-hot-toast';
-import { HiOutlineLocationMarker, HiOutlineExternalLink, HiOutlineClock, HiOutlinePhotograph } from 'react-icons/hi';
+import { HiOutlineLocationMarker, HiOutlineExternalLink, HiOutlineClock, HiOutlinePhotograph, HiOutlineSearch, HiOutlineFilter, HiX } from 'react-icons/hi';
 
 const BACKEND_URL = import.meta.env.VITE_API_URL?.replace('/api', '') || 'http://localhost:5000';
 
 const ParkingListPanel = ({ lots, selectedLot, onSelect, onViewSlots, userLocation }) => {
   const { isAuthenticated } = useAuth();
   const navigate = useNavigate();
-  const [routeData, setRouteData] = useState({}); // { [lotId]: { distance, duration } }
+  const [routeData, setRouteData] = useState({});
   const [loadingRoutes, setLoadingRoutes] = useState(false);
-  const [expandedImage, setExpandedImage] = useState(null); // lotId for image preview
+
+  // Search and Filter states
+  const [searchQuery, setSearchQuery] = useState('');
+  const [availabilityFilter, setAvailabilityFilter] = useState('all'); // 'all' | 'available'
+  const [zoneFilter, setZoneFilter] = useState('all');
+  const [slotTypeFilter, setSlotTypeFilter] = useState('all');
+
+  // Extract unique zones for filter dropdown
+  const uniqueZones = [...new Set(lots.map((l) => l.zone || l.city).filter(Boolean))];
 
   // Calculate distance between two coordinates (Haversine)
   const getDistance = (lat1, lon1, lat2, lon2) => {
@@ -38,9 +46,32 @@ const ParkingListPanel = ({ lots, selectedLot, onSelect, onViewSlots, userLocati
     return `${hrs}h ${mins % 60}m`;
   };
 
-  // Sort by distance if user location is available
+  // Filter and Sort lots
+  const filteredLots = lots.filter((lot) => {
+    const query = searchQuery.toLowerCase().trim();
+    const matchesSearch =
+      !query ||
+      lot.name?.toLowerCase().includes(query) ||
+      lot.address?.toLowerCase().includes(query) ||
+      lot.zone?.toLowerCase().includes(query) ||
+      lot.city?.toLowerCase().includes(query);
+
+    const matchesAvailability =
+      availabilityFilter === 'all' || (lot.availableSlots ?? lot.totalSlots) > 0;
+
+    const matchesZone =
+      zoneFilter === 'all' || lot.zone === zoneFilter || lot.city === zoneFilter;
+
+    const matchesSlotType =
+      slotTypeFilter === 'all' ||
+      lot.slotTypes?.includes(slotTypeFilter) ||
+      lot.type === slotTypeFilter;
+
+    return matchesSearch && matchesAvailability && matchesZone && matchesSlotType;
+  });
+
   const sortedLots = userLocation
-    ? [...lots]
+    ? [...filteredLots]
         .filter((l) => l.locationCoordinates?.lat && l.locationCoordinates?.lng)
         .map((l) => ({
           ...l,
@@ -50,16 +81,15 @@ const ParkingListPanel = ({ lots, selectedLot, onSelect, onViewSlots, userLocati
           ),
         }))
         .sort((a, b) => a.distance - b.distance)
-    : lots;
+    : filteredLots;
 
-  // Fetch driving routes for all lots when user location changes
+  // Fetch driving routes for all filtered lots when user location changes
   useEffect(() => {
     if (!userLocation || sortedLots.length === 0) return;
 
     const fetchRoutes = async () => {
       setLoadingRoutes(true);
       const results = {};
-      // Batch fetch (max 5 at a time to be polite to OSRM)
       const batches = [];
       for (let i = 0; i < sortedLots.length; i += 5) {
         batches.push(sortedLots.slice(i, i + 5));
@@ -80,7 +110,7 @@ const ParkingListPanel = ({ lots, selectedLot, onSelect, onViewSlots, userLocati
                 };
               }
             } catch {
-              // Fallback to straight-line
+              // Fallback
             }
           })
         );
@@ -90,7 +120,7 @@ const ParkingListPanel = ({ lots, selectedLot, onSelect, onViewSlots, userLocati
     };
 
     fetchRoutes();
-  }, [userLocation, lots.length]);
+  }, [userLocation, sortedLots.length]);
 
   const openDirections = (lot) => {
     if (!lot.locationCoordinates?.lat || !lot.locationCoordinates?.lng) return;
@@ -105,7 +135,7 @@ const ParkingListPanel = ({ lots, selectedLot, onSelect, onViewSlots, userLocati
     const imgs = [];
     if (lot.image) imgs.push(lot.image);
     if (lot.images?.length) imgs.push(...lot.images);
-    return [...new Set(imgs)]; // deduplicate
+    return [...new Set(imgs)];
   };
 
   const getImageUrl = (img) => {
@@ -114,9 +144,86 @@ const ParkingListPanel = ({ lots, selectedLot, onSelect, onViewSlots, userLocati
     return `${BACKEND_URL}${img.startsWith('/') ? '' : '/'}${img}`;
   };
 
+  const clearFilters = () => {
+    setSearchQuery('');
+    setAvailabilityFilter('all');
+    setZoneFilter('all');
+    setSlotTypeFilter('all');
+  };
+
+  const hasActiveFilters = searchQuery || availabilityFilter !== 'all' || zoneFilter !== 'all' || slotTypeFilter !== 'all';
+
   return (
     <div className="space-y-3 overflow-y-auto max-h-[calc(100vh-16rem)] pr-1 custom-scrollbar">
-      <p className="text-sm text-gray-500 dark:text-gray-400 font-medium">
+      {/* Search and Filters Bar */}
+      <div className="bg-white dark:bg-dark-card p-3 rounded-xl border border-gray-100 dark:border-dark-border space-y-2.5 shadow-sm">
+        <div className="relative">
+          <HiOutlineSearch className="absolute left-3 top-2.5 text-gray-400" size={16} />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search by zone, name, or location..."
+            className="w-full pl-9 pr-8 py-2 text-xs bg-gray-50 dark:bg-dark-border/50 border border-gray-200 dark:border-dark-border rounded-lg focus:outline-none focus:border-primary-500 text-gray-800 dark:text-gray-100 placeholder-gray-400"
+          />
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery('')}
+              className="absolute right-2.5 top-2.5 text-gray-400 hover:text-gray-600"
+            >
+              <HiX size={14} />
+            </button>
+          )}
+        </div>
+
+        {/* Filter Dropdowns */}
+        <div className="grid grid-cols-3 gap-1.5">
+          <select
+            value={availabilityFilter}
+            onChange={(e) => setAvailabilityFilter(e.target.value)}
+            className="text-[11px] bg-gray-50 dark:bg-dark-border/50 border border-gray-200 dark:border-dark-border rounded-lg px-2 py-1.5 text-gray-700 dark:text-gray-300 focus:outline-none focus:border-primary-500"
+          >
+            <option value="all">All Status</option>
+            <option value="available">Available Only</option>
+          </select>
+
+          <select
+            value={zoneFilter}
+            onChange={(e) => setZoneFilter(e.target.value)}
+            className="text-[11px] bg-gray-50 dark:bg-dark-border/50 border border-gray-200 dark:border-dark-border rounded-lg px-2 py-1.5 text-gray-700 dark:text-gray-300 focus:outline-none focus:border-primary-500"
+          >
+            <option value="all">All Zones</option>
+            {uniqueZones.map((z) => (
+              <option key={z} value={z}>{z}</option>
+            ))}
+          </select>
+
+          <select
+            value={slotTypeFilter}
+            onChange={(e) => setSlotTypeFilter(e.target.value)}
+            className="text-[11px] bg-gray-50 dark:bg-dark-border/50 border border-gray-200 dark:border-dark-border rounded-lg px-2 py-1.5 text-gray-700 dark:text-gray-300 focus:outline-none focus:border-primary-500"
+          >
+            <option value="all">All Types</option>
+            <option value="Car">Car</option>
+            <option value="Bike">Bike</option>
+            <option value="EV">EV Charging</option>
+          </select>
+        </div>
+
+        {hasActiveFilters && (
+          <div className="flex items-center justify-between pt-1">
+            <span className="text-[11px] text-primary-600 dark:text-primary-400 font-medium">Filters applied</span>
+            <button
+              onClick={clearFilters}
+              className="text-[11px] text-red-500 hover:underline flex items-center gap-0.5 font-medium"
+            >
+              Clear filters
+            </button>
+          </div>
+        )}
+      </div>
+
+      <p className="text-sm text-gray-500 dark:text-gray-400 font-medium px-1">
         {sortedLots.length} parking location{sortedLots.length !== 1 ? 's' : ''} found
         {loadingRoutes && <span className="ml-2 text-xs text-primary-500 animate-pulse">• Calculating routes...</span>}
       </p>
@@ -138,7 +245,6 @@ const ParkingListPanel = ({ lots, selectedLot, onSelect, onViewSlots, userLocati
                 : 'border-gray-100 dark:border-dark-border bg-white dark:bg-dark-card hover:border-primary-300'
             }`}
           >
-            {/* Images carousel */}
             {images.length > 0 && (
               <div className="relative h-32 overflow-hidden bg-gray-100 dark:bg-dark-border">
                 <div className="flex overflow-x-auto snap-x snap-mandatory h-full scrollbar-hide">
@@ -179,7 +285,6 @@ const ParkingListPanel = ({ lots, selectedLot, onSelect, onViewSlots, userLocati
                 )}
               </div>
 
-              {/* Route info (driving distance + time) */}
               {(route || lot.distance !== undefined) && (
                 <div className="flex items-center gap-3 mt-2 text-xs">
                   {route ? (
@@ -213,7 +318,6 @@ const ParkingListPanel = ({ lots, selectedLot, onSelect, onViewSlots, userLocati
                 </div>
               </div>
 
-              {/* Action buttons */}
               <div className="flex items-center gap-2 mt-3">
                 <button
                   onClick={(e) => {
@@ -259,9 +363,18 @@ const ParkingListPanel = ({ lots, selectedLot, onSelect, onViewSlots, userLocati
       })}
 
       {sortedLots.length === 0 && (
-        <div className="text-center py-8 text-gray-500">
-          <p className="text-4xl mb-2">🗺️</p>
-          <p className="text-sm">No parking locations found</p>
+        <div className="text-center py-12 text-gray-500 bg-white dark:bg-dark-card rounded-xl border border-gray-100 dark:border-dark-border p-6">
+          <p className="text-4xl mb-2">🔍</p>
+          <p className="text-sm font-semibold text-gray-800 dark:text-gray-200">No parking locations found</p>
+          <p className="text-xs text-gray-400 mt-1">Try adjusting your search query or filters.</p>
+          {hasActiveFilters && (
+            <button
+              onClick={clearFilters}
+              className="mt-3 text-xs bg-primary-50 dark:bg-primary-900/20 text-primary-600 dark:text-primary-400 font-medium px-3 py-1.5 rounded-lg"
+            >
+              Reset Filters
+            </button>
+          )}
         </div>
       )}
     </div>
