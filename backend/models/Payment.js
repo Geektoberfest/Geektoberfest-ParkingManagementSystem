@@ -20,11 +20,44 @@ const paymentSchema = new mongoose.Schema(
     },
     paymentMethod: {
       type: String,
-      enum: ['card', 'upi', 'wallet', 'cash'],
+      enum: ['card', 'upi', 'wallet', 'cash', 'razorpay'],
       default: 'card',
+    },
+    // Payment provider (test mode). Secrets are env-only, never stored here.
+    provider: {
+      type: String,
+      default: 'razorpay',
+    },
+    razorpayOrderId: {
+      type: String,
+      unique: true,
+      sparse: true,
+      index: true,
+    },
+    razorpayPaymentId: {
+      type: String,
+      unique: true,
+      sparse: true,
+    },
+    razorpaySignature: {
+      type: String,
+      select: false,
+    },
+    receipt: {
+      type: String,
+    },
+    currency: {
+      type: String,
+      default: 'INR',
+    },
+    // Server-computed fare breakdown snapshot (hours, base, tax, fees, total).
+    breakdown: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null,
     },
     transactionId: {
       type: String,
+      unique: true,
       default: () => `TXN-${uuidv4().slice(0, 12).toUpperCase()}`,
     },
     status: {

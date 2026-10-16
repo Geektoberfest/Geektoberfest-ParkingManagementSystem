@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import api from '../../services/api';
+import { fetchQuote } from '../../services/razorpayClient';
+import FareBreakdown from '../../components/parking/FareBreakdown';
 import { useAuth } from '../../context/AuthContext';
 import { connectSocket, joinLot, leaveLot } from '../../services/socket';
 import MapView from '../../components/map/MapView';
@@ -195,6 +197,30 @@ const BookParking = () => {
       ? calculateDuration(bookingForm.startTime, bookingForm.endTime)
       : 0;
   const totalCost = duration * (lotDetail?.pricePerHour || 0);
+
+  // Server-authoritative fare preview (client total is display-only).
+  const [serverQuote, setServerQuote] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      if (!lotDetail?._id || !bookingForm.startTime || !bookingForm.endTime) {
+        setServerQuote(null);
+        return;
+      }
+      try {
+        const q = await fetchQuote({
+          parkingLotId: lotDetail._id,
+          startTime: bookingForm.startTime,
+          endTime: bookingForm.endTime,
+        });
+        if (!cancelled) setServerQuote(q);
+      } catch {
+        if (!cancelled) setServerQuote(null);
+      }
+    };
+    load();
+    return () => { cancelled = true; };
+  }, [lotDetail?._id, bookingForm.startTime, bookingForm.endTime]);
 
   const handleConfirmBooking = useCallback(async () => {
     if (!selectedSlot) return toast.error('Please select a slot');
@@ -481,21 +507,24 @@ const BookParking = () => {
                   </div>
 
                   {duration > 0 && (
-                    <div className="bg-primary-50 dark:bg-primary-900/20 rounded-xl p-4 space-y-2 border border-primary-200 dark:border-primary-800">
-                      <div className="flex justify-between text-sm">
-                        <span className="text-gray-600 dark:text-gray-400">Duration</span>
-                        <span className="font-medium text-gray-900 dark:text-white">{duration} hour(s)</span>
+                    <div className="space-y-3">
+                      <div className="bg-primary-50 dark:bg-primary-900/20 rounded-xl p-4 space-y-2 border border-primary-200 dark:border-primary-800">
+                        <div className="flex justify-between text-sm">
+                          <span className="text-gray-600 dark:text-gray-400">Duration</span>
+                          <span className="font-medium text-gray-900 dark:text-white">{duration} hour(s)</span>
+                        </div>
+                        <div className="flex justify-between text-sm">
+                          <span className="text-gray-600 dark:text-gray-400">Rate</span>
+                          <span className="font-medium text-gray-900 dark:text-white">
+                            {formatCurrency(lotDetail?.pricePerHour)}/hr
+                          </span>
+                        </div>
+                        <div className="flex justify-between text-lg font-bold border-t border-primary-200 dark:border-primary-700 pt-2">
+                          <span className="text-gray-900 dark:text-white">Total</span>
+                          <span className="text-primary-600">{formatCurrency(totalCost)}</span>
+                        </div>
                       </div>
-                      <div className="flex justify-between text-sm">
-                        <span className="text-gray-600 dark:text-gray-400">Rate</span>
-                        <span className="font-medium text-gray-900 dark:text-white">
-                          {formatCurrency(lotDetail?.pricePerHour)}/hr
-                        </span>
-                      </div>
-                      <div className="flex justify-between text-lg font-bold border-t border-primary-200 dark:border-primary-700 pt-2">
-                        <span className="text-gray-900 dark:text-white">Total</span>
-                        <span className="text-primary-600">{formatCurrency(totalCost)}</span>
-                      </div>
+                      {serverQuote?.breakdown && <FareBreakdown breakdown={serverQuote.breakdown} />}
                     </div>
                   )}
 
