@@ -109,6 +109,9 @@ const startServer = async () => {
   });
 };
 
-startServer();
+// Only start listening when run directly, so tests can import the app without starting the server
+if (require.main === module) {
+  startServer();
+}
 
 module.exports = { app, server };

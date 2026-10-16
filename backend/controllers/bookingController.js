@@ -5,6 +5,7 @@ const User = require('../models/User');
 const Notification = require('../models/Notification');
 const QRCode = require('qrcode');
 const { sendBookingConfirmationEmail, sendCancellationEmail } = require('../services/emailService');
+const { withSlotLock } = require('../services/slotLock');
 
 // @desc    Create booking
 // @route   POST /api/bookings/create
@@ -12,9 +13,16 @@ exports.createBooking = async (req, res, next) => {
   try {
     const { slotId, parkingLotId, startTime, endTime, vehicleNumber } = req.body;
 
-    // Check slot availability
+    // Calculate duration & cost
+    const start = new Date(startTime);
+    const end = new Date(endTime);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) {
+      return res.status(400).json({ success: false, message: 'End time must be after start time' });
+    }
+
+    // Check slot exists and is active. Time conflicts are checked under the slot lock below.
     const slot = await ParkingSlot.findById(slotId);
-    if (!slot || slot.status !== 'available') {
+    if (!slot || !slot.isActive) {
       return res.status(400).json({ success: false, message: 'Slot is not available' });
     }
 
@@ -24,37 +32,42 @@ exports.createBooking = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Parking lot not found' });
     }
 
-    // Calculate duration & cost
-    const start = new Date(startTime);
-    const end = new Date(endTime);
-
-    // ── Booking Overlap Protection ──
-    const overlappingBooking = await Booking.findOne({
-      slotId,
-      bookingStatus: { $in: ['pending', 'confirmed', 'active'] },
-      startTime: { $lt: end },
-      endTime: { $gt: start },
-    });
-    if (overlappingBooking) {
-      return res.status(409).json({
-        success: false,
-        message: 'This slot is already booked for the selected time period. Please choose a different time or slot.',
-      });
-    }
     const durationHours = Math.max(1, Math.ceil((end - start) / (1000 * 60 * 60)));
     const totalAmount = durationHours * lot.pricePerHour;
 
-    // Create booking
-    const booking = await Booking.create({
-      userId: req.user._id,
-      slotId,
-      parkingLotId,
-      vehicleNumber: vehicleNumber || req.user.vehicleNumber,
-      startTime: start,
-      endTime: end,
-      duration: durationHours,
-      totalAmount,
-      bookingStatus: 'confirmed',
+    // ── Booking Overlap Protection ──
+    // The overlap check and insert run under a per-slot lock, so two concurrent requests
+    // for the same slot cannot both pass the check. A conflict throws a 409.
+    const booking = await withSlotLock(slot._id, async () => {
+      const overlappingBooking = await Booking.findOne({
+        slotId,
+        bookingStatus: { $in: ['pending', 'confirmed', 'active'] },
+        startTime: { $lt: end },
+        endTime: { $gt: start },
+      });
+      if (overlappingBooking) {
+        const err = new Error('This slot is already booked for the selected time period. Please choose a different time or slot.');
+        err.statusCode = 409;
+        throw err;
+      }
+
+      const newBooking = await Booking.create({
+        userId: req.user._id,
+        slotId,
+        parkingLotId,
+        vehicleNumber: vehicleNumber || req.user.vehicleNumber,
+        startTime: start,
+        endTime: end,
+        duration: durationHours,
+        totalAmount,
+        bookingStatus: 'confirmed',
+      });
+
+      // Update slot status
+      slot.status = 'reserved';
+      await slot.save();
+
+      return newBooking;
     });
 
     // Generate QR code
@@ -67,10 +80,6 @@ exports.createBooking = async (req, res, next) => {
     const qrCode = await QRCode.toDataURL(qrData);
     booking.qrCode = qrCode;
     await booking.save();
-
-    // Update slot status
-    slot.status = 'reserved';
-    await slot.save();
 
     // Update available slots count on the parking lot
     const availableCount = await ParkingSlot.countDocuments({ parkingLotId, status: 'available', isActive: true });
