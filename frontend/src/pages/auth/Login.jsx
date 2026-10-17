@@ -41,9 +41,9 @@ const Login = () => {
         className="w-full max-w-md"
       >
         <div className="text-center mb-8">
-          <div className="w-14 h-14 bg-primary-600 rounded-xl flex items-center justify-center mx-auto mb-4">
-            <span className="text-white font-bold text-2xl">P</span>
-          </div>
+          <Link to="/" className="mx-auto mb-3 inline-flex h-20 w-52 items-center justify-center rounded-lg dark:bg-white/95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-dark-bg" aria-label="SmartPark home">
+            <img src="/images/smartpark-logo.png" alt="SmartPark" className="h-20 w-52 scale-[1.35] object-contain" />
+          </Link>
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Welcome Back</h1>
           <p className="text-gray-500 dark:text-gray-400 mt-1">Sign in to your SmartPark account</p>
         </div>
